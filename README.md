@@ -2,6 +2,7 @@ Anritsu Ms4647B
 
 Carbide 3D Shapeoko XXL CNC Router Kit
 
+838mm x 838mm x 75mm (33" x 33" x 3") and an overall footprint of 1137mm x 1023.62mm (44.8" x 40.3") It uses a 1.25hp spindle and NEMA 23 stepper motors for motion control with an accuracy of about 0.005".
 
 Requirements:
 Raspberry pi 5
