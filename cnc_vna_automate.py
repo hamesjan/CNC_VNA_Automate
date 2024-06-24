@@ -5,8 +5,7 @@ import csv
 
 
 def run_measurement(start_freq, stop_freq, num_points, progress_bar, update_progress):
-    # Change to the correct port if necessary
-    cnc_serial = initialize_cnc(port='/dev/ttyACM0')
+    # cnc_serial = initialize_cnc(port='/dev/ttyACM0')  # Change to the correct port if necessary
     vna = initialize_vna()
     configure_vna(vna, start_freq=start_freq,
                   stop_freq=stop_freq, num_points=num_points)
@@ -32,14 +31,13 @@ def run_measurement(start_freq, stop_freq, num_points, progress_bar, update_prog
     increment_x = 4
     incerment_num = 51
 
-    positions = [(increment_x, 0, 0) for i in range(incerment_num)]
+   # positions = [(increment_x, 0, 0) for i in range(incerment_num)]
 
-
-#     positions = [
-#         (-10, -10, 0),
-#         (-20, -10, 0)
-#         # Add more positions here if needed (incremental)
-#     ]
+    positions = [
+        (-10, -10, 0),
+        (-20, -10, 0)
+        # Add more positions here if needed (incremental)
+    ]
     progress_step = 100 / len(positions)
     current_progress = 0
 
@@ -158,6 +156,19 @@ def parse_vna_data(data):
     return interleaved
 
 
+def initialize_all():
+    cnc_serial = serial.Serial(port='/dev/ttyACM0', baudrate=115200, timeout=1)
+    time.sleep(2)  # Wait for connection to establish
+    cnc_serial.write(b'\n')  # Wake up the machine
+    time.sleep(1)
+    cnc_serial.write(b'$X\n')  # Unlock the machine
+    time.sleep(1)
+    response = cnc_serial.readlines()  # Read all available responses
+    for line in response:
+        print("Initialize response:", line.decode().strip())
+    return
+
+
 def initialize_cnc(port='/dev/ttyACM0', baudrate=115200):
     cnc_serial = serial.Serial(port, baudrate, timeout=1)
     time.sleep(2)  # Wait for connection to establish
@@ -168,6 +179,10 @@ def initialize_cnc(port='/dev/ttyACM0', baudrate=115200):
     response = cnc_serial.readlines()  # Read all available responses
     for line in response:
         print("Initialize response:", line.decode().strip())
+    send_command(cnc_serial, '$H\n')
+    send_command(cnc_serial, 'G91\n')  # incremental positioning pode
+    # set to mm (metric system) for movements
+    send_command(cnc_serial, 'G21\n')
     return cnc_serial
 
 
@@ -182,6 +197,14 @@ def send_command(cnc_serial, command):
 def move_cnc(cnc_serial, x, y, z, feed_rate):
     command = f"G1 X{x} Y{y} Z{z} F{feed_rate}\n"
     send_command(cnc_serial, command)
+
+
+def move_x_cnc(cnc_serial, x):
+    move_cnc(cnc_serial, x, 0, 0, 5000)
+
+
+def move_y_cnc(cnc_serial, y):
+    move_cnc(cnc_serial, 0, y, 0, 5000)
 
 
 def check_position(cnc_serial, x, y, z, tolerance=1.00):
