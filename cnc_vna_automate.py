@@ -2,17 +2,16 @@ import serial
 import time
 import pyvisa
 import csv
+import threading
+import pandas as pd
+
+stopped_machine = False
 
 
-def run_measurement(start_freq, stop_freq, num_points, progress_bar, update_progress):
-    # cnc_serial = initialize_cnc(port='/dev/ttyACM0')  # Change to the correct port if necessary
+def run_measurement(cnc_serial, start_freq, stop_freq, num_points, esrx, esry, espx, espy, absolute_pos, progress_bar, update_progress):
     vna = initialize_vna()
     configure_vna(vna, start_freq=start_freq,
                   stop_freq=stop_freq, num_points=num_points)
-
-    # Run the homing cycle
-    send_command(cnc_serial, '$H\n')
-    # send_command(cnc_serial, 'G28\n')  # Move to home position
 
     # Set to incremental positioning mode
     send_command(cnc_serial, 'G91\n')
@@ -24,24 +23,39 @@ def run_measurement(start_freq, stop_freq, num_points, progress_bar, update_prog
         f"Running measurement from {start_freq} GHz to {stop_freq} GHz with {num_points} points.")
 
     # Define the dimensions of your CNC's working area
-    move_cnc(cnc_serial, x=-600, y=-200, z=0, feed_rate=10000)
+
+    move_cnc(cnc_serial, x=-(esrx / 2), y=0, z=0, feed_rate=5000)
+    time.sleep(2)
+    move_cnc(cnc_serial, x=0, y=(esry / 2), z=0, feed_rate=5000)
+    time.sleep(2)
+    absolute_pos[0] -= esrx/2
+    absolute_pos[1] += esry/2
 
     # Define the positions
+    pos_or_neg = -1
+    increment_y = esry / (espy - 1)
+    increment_x = esrx / (espx - 1)
+    positions = []
+    for i in range(espx - 1):
+        temp_pos = [(0, increment_y * pos_or_neg, 0) for i in range(espy - 1)]
+        pos_or_neg = pos_or_neg * -1
+        positions.extend(temp_pos)
+        positions.append((increment_x, 0, 0))
+    temp_pos = [(0, increment_y * pos_or_neg, 0) for i in range(espy - 1)]
+    positions.extend(temp_pos)
 
-    increment_x = 4
-    incerment_num = 51
-
-   # positions = [(increment_x, 0, 0) for i in range(incerment_num)]
-
-    positions = [
-        (-10, -10, 0),
-        (-20, -10, 0)
-        # Add more positions here if needed (incremental)
-    ]
+#     positions = [
+#         (-10, -10, 0),
+#         (-20, -10, 0)
+#         # Add more positions here if needed (incremental)
+#     ]
+    print(positions)
+    print("length: " + str(len(positions)))
     progress_step = 100 / len(positions)
     current_progress = 0
+    positions.insert(0, (0, 0, 0))
 
-    current_position = [-3, -3, 0]
+    current_position = [-(esrx/2), (esry/2), 0]
     csv_file = 'measurement_data.csv'
 
     # Create or clear the CSV file and write the header
@@ -56,14 +70,19 @@ def run_measurement(start_freq, stop_freq, num_points, progress_bar, update_prog
 
     for pt, (dx, dy, dz) in enumerate(positions):
         # Move the CNC to the next position
-        move_cnc(cnc_serial, dx, dy, dz, feed_rate)
 
         # Collect VNA data
+        thread = threading.Thread(
+            target=check_position, args=(cnc_serial, absolute_pos,))
+        thread.start()
+        thread.join()
         data_collected = False
+        if stopped_machine:
+            break
         while not data_collected:
             data = collect_vna_data(vna)
+            print("collecting data")
             if data:
-                print(data)
                 # Parse the data
                 parsed_data = parse_vna_data(data)
                 # Write data to the CSV file
@@ -75,16 +94,23 @@ def run_measurement(start_freq, stop_freq, num_points, progress_bar, update_prog
                 # Update the current position after the move
                 current_position = [
                     current_position[0] + dx, current_position[1] + dy, current_position[2] + dz]
+                absolute_pos = [absolute_pos[0] + dx, absolute_pos[1] + dy]
                 data_collected = True
             else:
                 print("Data collection failed, retrying...")
-
+        move_cnc(cnc_serial, dx, dy, dz, feed_rate)
+        time.sleep(1)
         current_progress += progress_step
         update_progress(current_progress)
 
     end_time = time.time()
     elapsed_time = end_time - start_time
     print(f"Loop completed in {elapsed_time:.2f} seconds")
+
+    df = pd.read_csv(csv_file)
+    grouped_df = df.groupby('x', group_keys=False).apply(
+        lambda x: x.sort_values('y', ascending=False))
+    grouped_df.to_csv(csv_file, index=False)
 
     cnc_serial.close()
 
@@ -115,7 +141,7 @@ def collect_vna_data(vna):
         vna.write("INIT:IMM")
         # Check for operation complete
         status = vna.query("*OPC?")
-        print(f"Sweep completed: {status}")
+        # print(f"Sweep completed: {status}")
         if status.strip() == "1":
             data = vna.query("CALC:DATA:SDAT?")
             return data
@@ -129,18 +155,18 @@ def collect_vna_data(vna):
 
 def parse_vna_data(data):
     lines = data.strip().split('\n')
-    print("Split lines:", lines)
+    # print("Split lines:", lines)
     values = []
 
     for line in lines:
         # Remove the initial identifier if present
         if line.startswith('#'):
-            line = line.split('-', 1)[1]  # Split only on the first hyphen
+            line = line.split(' ', 1)[1]  # Split only on the first space
         split_values = [v.strip() for v in line.split(',')]
-        # print("Split values from line:", split_values)
+       # print("Split values from line:", split_values)
         values.extend(split_values)
 
-    # print("All extracted values:", values)
+#    print("All extracted values:", values)
 
     # Interleave amplitudes and phases
     interleaved = []
@@ -207,7 +233,15 @@ def move_y_cnc(cnc_serial, y):
     move_cnc(cnc_serial, 0, y, 0, 5000)
 
 
-def check_position(cnc_serial, x, y, z, tolerance=1.00):
+def go_to_home(cnc_serial, zero_home):
+    send_command(cnc_serial, 'G90\n')  # abs mode
+    move_cnc(cnc_serial, -(838 - zero_home[0]), -(838 - zero_home[1]), 0, 5000)
+    send_command(cnc_serial, 'G91\n')  # abs mode
+
+
+def check_position(cnc_serial, absolute_pos, tolerance=1.00):
+    hold_count = 0
+    global stopped_machine
     while True:
         cnc_serial.write(b"?")
         response = cnc_serial.readline().decode().strip()
@@ -219,11 +253,15 @@ def check_position(cnc_serial, x, y, z, tolerance=1.00):
                     pos = part[5:].split(',')
                     current_x = float(pos[0])
                     current_y = float(pos[1])
-                    current_z = float(pos[2])
-                    if (abs(current_x - x) < tolerance and
-                            abs(current_y - y) < tolerance and
-                            abs(current_z - z) < tolerance):
+                    if (abs(current_x + (838 - absolute_pos[0])) < tolerance and
+                            abs(current_y + (838 - absolute_pos[1])) < tolerance):
                         print(
-                            f"Reached position: X={current_x}, Y={current_y}, Z={current_z}")
+                            f"Reached position: X={current_x}, Y={current_y}")
                         return True
+                if part.startswith("Hold"):
+                    hold_count += 1
+                    if hold_count > 10:
+                        stopped_machine = True
+                        return False
+
         time.sleep(0.5)
